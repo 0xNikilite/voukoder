@@ -36,42 +36,44 @@ jobs:
     runs-on: windows-2022
     steps:
     - name: Set up dependencies
+      shell: pwsh
       run: |
         Invoke-WebRequest ${{ github.event.inputs.ffmpegLibs }} -Headers @{"Cache-Control"="no-cache"} -OutFile temp.tar.gz
         Invoke-WebRequest https://github.com/wxWidgets/wxWidgets/releases/download/v3.1.2/wxWidgets-3.1.2.7z -OutFile wxWidgets-3.1.2.7z
-        md external
-        md project
+        New-Item -ItemType Directory -Force -Path external, project
         & cmd.exe '/C 7z x "temp.tar.gz" -so | 7z x -aoa -si -ttar -o"external"'
-        md external\lib\release
-        move external\lib\*.lib external\lib\release\
+        New-Item -ItemType Directory -Force -Path external\lib\release
+        Move-Item -Path external\lib\*.lib -Destination external\lib\release\
         Get-ChildItem -Recurse .\external\
     
     - name: Set up MSBuild
-      uses: microsoft/setup-msbuild@v1.1
+      uses: microsoft/setup-msbuild@v2
     
+    - name: Setup MSVC Developer Command Prompt
+      uses: ilammy/msvc-dev-cmd@v1
+
     - name: Checkout Voukoder
-      uses: actions/checkout@v3.0.0
+      uses: actions/checkout@v4
       with:
         path: project\voukoder
         ref: ${{ github.event.inputs.refId }}
     
     - name: Check cache for wxWidgets 3.1.2
       id: wxw-cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: project/voukoder/wxWidgets-3.1.2
-        key: ${{ runner.os }}-${{ hashFiles('wxWidgets-3.1.2.7z') }}
+        key: wxw-3.1.2-${{ runner.os }}-${{ hashFiles('wxWidgets-3.1.2.7z') }}
     
     - name: Compile wxWidgets 3.1.2
       if: steps.wxw-cache.outputs.cache-hit != 'true'
+      shell: pwsh
       run: |
-        dir
-        md project\voukoder\wxWidgets-3.1.2
-        cd project\voukoder\wxWidgets-3.1.2
+        New-Item -ItemType Directory -Force -Path project\voukoder\wxWidgets-3.1.2
+        Set-Location project\voukoder\wxWidgets-3.1.2
         & 'C:\Program Files\7-Zip\7z.exe' x -y ..\..\..\wxWidgets-3.1.2.7z
-        "${{ env.vsPath }}VC\Auxiliary\Build\vcvars64.bat"
-        cd build\msw
-        & '${{ env.vsPath }}MSBuild\Current\Bin\MSBuild.exe' -p:Configuration=release -p:Platform=x64 -p:PlatformToolset=v143 -m wx_vc15.sln
+        Set-Location build\msw
+        msbuild -p:Configuration=release -p:Platform=x64 -p:PlatformToolset=v143 -m wx_vc15.sln
     
     - name: Set version number
       shell: cmd
@@ -91,30 +93,30 @@ jobs:
       env:
         PFX_CONTENT: ${{ secrets.CODESIGN_PFX }} 
       run: |
-        $pfxPath = Join-Path -Path $env:RUNNER_TEMP -ChildPath "cert.pfx"; 
-        $encodedBytes = [System.Convert]::FromBase64String($env:PFX_CONTENT); 
-        Set-Content $pfxPath -Value $encodedBytes -AsByteStream;
-        Write-Output "::set-output name=PFX_PATH::$pfxPath";
+        $pfxPath = Join-Path -Path $env:RUNNER_TEMP -ChildPath "cert.pfx"
+        $encodedBytes = [System.Convert]::FromBase64String($env:PFX_CONTENT)
+        Set-Content $pfxPath -Value $encodedBytes -AsByteStream
+        "PFX_PATH=$pfxPath" >> $env:GITHUB_OUTPUT
 
     - name: Build Installer
       shell: cmd
       env:
         CODESIGN_PFX_FILE: ${{ steps.create-pfx.outputs.PFX_PATH }}
       run: |
-        call "${{ env.vsPath }}VC\Auxiliary\Build\vcvars64.bat"
         MSBuild.exe -t:Installer -maxCpuCount -p:Configuration=Release -m project\voukoder\Voukoder.sln
         move project\voukoder\Installer\bin\x64\Release\voukoder.msi voukoder-${{ github.event.inputs.verPublic }}.msi
-        signtool sign /f "${{ steps.create-pfx.outputs.PFX_PATH }}" /fd SHA256  /tr http://ts.ssl.com /td sha256 /v voukoder-${{ github.event.inputs.verPublic }}.msi
+        signtool sign /f "${{ steps.create-pfx.outputs.PFX_PATH }}" /fd SHA256 /tr http://ts.ssl.com /td sha256 /v voukoder-${{ github.event.inputs.verPublic }}.msi
 
     - name: Delete PFX certificate
+      if: always()
       shell: pwsh
       env:
         PFX_PATH: ${{ steps.create-pfx.outputs.PFX_PATH }}
       run: |
-        Remove-Item -Path $env:PFX_PATH;
+        if (Test-Path $env:PFX_PATH) { Remove-Item -Path $env:PFX_PATH -Force }
         
     - name: Publish artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
-        name: Voukoder ${{ github.event.inputs.verPublic }} (${{ github.event.inputs.verMajor }}.${{ github.event.inputs.verMinor }}.${{ github.event.inputs.verPatch }})
+        name: Voukoder-${{ github.event.inputs.verPublic }}-${{ github.event.inputs.verMajor }}.${{ github.event.inputs.verMinor }}.${{ github.event.inputs.verPatch }}
         path: voukoder-${{ github.event.inputs.verPublic }}.msi
